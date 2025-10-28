@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Note Excluder",
+  "version": "0.2.0",
+  "description": "note.com 上で指定したカードから有料記事と除外ユーザーの記事を非表示にします",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://note.com/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["excludes.txt"],
+      "matches": ["https://note.com/*"]
+    }
+  ]
+}
+
