@@ -1,9 +1,10 @@
 (function () {
   'use strict';
 
-  const CARD_SELECTOR = '[class*="m-largeNoteWrapper__card"]';
+  const CARD_SELECTOR = '[class*="m-largeNoteWrapper__card"], div.flex.w-full.rounded-lg.bg-surface-normal';
 
   let excludeUsers = new Set();
+  let seenAuthors = new Set(); // 表示済みの著者IDを記録するセット
 
   async function init() {
     try {
@@ -58,7 +59,7 @@
 
   function processCard(card) {
     if (!(card instanceof HTMLElement)) return;
-    if (!card.className || !card.className.includes('m-largeNoteWrapper__card')) return;
+    if (typeof card.matches === 'function' && !card.matches(CARD_SELECTOR)) return;
     if (card.dataset.noteexcluderProcessed === '1') return;
     card.dataset.noteexcluderProcessed = '1';
 
@@ -68,12 +69,31 @@
     }
 
     const author = extractAuthorUsername(card);
-    if (author && excludeUsers.has(author)) {
-      hideCard(card, 'user');
+    if (author) {
+      if (excludeUsers.has(author)) {
+        hideCard(card, 'user');
+        return;
+      }
+
+      // 同一作者の2記事目以降を非表示にする
+      if (seenAuthors.has(author)) {
+        hideCard(card, 'duplicate');
+        return;
+      }
+
+      // 初回表示の作者を記録
+      seenAuthors.add(author);
     }
   }
 
   function isPaidCard(card) {
+    // 新デザイン（興味・関心ページ等）での明示的な有料判定
+    // 有料記事には <span class="text-text-success text-sm">¥1,980</span> のような要素が含まれる
+    if (card.querySelector('.text-text-success')) {
+      return true;
+    }
+
+    // 旧デザイン用の判定
     const hints = card.querySelectorAll('[class*="paid" i], [class*="price" i], [class*="plan" i], [class*="member" i], [data-price], [data-paid], svg[aria-label], [aria-label*="有料"]');
     for (const hint of hints) {
       const text = compactText(hint.textContent);
