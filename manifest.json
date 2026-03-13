@@ -14,9 +14,8 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["excludes.txt"],
+      "resources": ["excludes.txt", "allow_urls.txt"],
       "matches": ["https://note.com/*"]
     }
   ]
 }
-
