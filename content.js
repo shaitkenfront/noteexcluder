@@ -2,23 +2,47 @@
   'use strict';
 
   const CARD_SELECTOR = '[class*="m-largeNoteWrapper__card"], div.flex.w-full.rounded-lg.bg-surface-normal';
+  const STORAGE_EXCLUDE_KEY = 'extraExcludedUsers';
+  const RESERVED_TOP_LEVEL_PATHS = new Set([
+    'about',
+    'account',
+    'creators',
+    'events',
+    'help',
+    'interests',
+    'magazines',
+    'messages',
+    'n',
+    'notifications',
+    'recommendations',
+    'search',
+    'settings',
+    'timeline'
+  ]);
 
+  let fileExcludeUsers = new Set();
   let excludeUsers = new Set();
+  let allowPaidUsers = new Set();
   let allowUrls = new Set();
   let seenAuthors = new Set();
   let lastUrl = location.href;
 
   async function init() {
     try {
-      excludeUsers = await loadExcludeUsers();
+      fileExcludeUsers = await loadExcludeUsers();
+      excludeUsers = mergeSets(fileExcludeUsers, await loadStoredExcludeUsers());
+      allowPaidUsers = await loadAllowPaidUsers();
       allowUrls = await loadAllowUrls();
     } catch (e) {
       console.warn('[NoteExcluder] 除外設定ファイルの読み込みに失敗:', e);
+      fileExcludeUsers = new Set();
       excludeUsers = new Set();
+      allowPaidUsers = new Set();
       allowUrls = new Set();
     }
 
     resetOnUrlChange();
+    observeStorageChanges();
     scanCards();
     observeMutations();
   }
@@ -28,9 +52,8 @@
     const observer = new MutationObserver(() => {
       if (location.href !== lastUrl) {
         lastUrl = location.href;
-        seenAuthors.clear();
         console.log('[NoteExcluder] URLが変更されたため、表示済み著者リストをリセットしました');
-        scanCards();
+        rescanAllCards();
       }
     });
     observer.observe(document.querySelector('head > title'), { subtree: true, characterData: true, childList: true });
@@ -39,29 +62,29 @@
     window.addEventListener('popstate', () => {
       if (location.href !== lastUrl) {
         lastUrl = location.href;
-        seenAuthors.clear();
-        scanCards();
+        rescanAllCards();
       }
     });
   }
 
+  function observeStorageChanges() {
+    chrome.storage.onChanged.addListener((changes, areaName) => {
+      if (areaName !== 'local' || !changes[STORAGE_EXCLUDE_KEY]) return;
+
+      excludeUsers = mergeSets(
+        fileExcludeUsers,
+        normalizeStoredUserList(changes[STORAGE_EXCLUDE_KEY].newValue)
+      );
+      rescanAllCards();
+    });
+  }
+
   async function loadExcludeUsers() {
-    const url = chrome.runtime.getURL('excludes.txt');
-    const users = new Set();
-    try {
-      const res = await fetch(url, { cache: 'no-store' });
-      if (!res.ok) throw new Error(`status ${res.status}`);
-      const text = await res.text();
-      text.split(/\r?\n/).forEach(line => {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith('#')) return;
-        const normalized = normalizeUsername(trimmed);
-        if (normalized) users.add(normalized);
-      });
-    } catch (e) {
-      console.warn('[NoteExcluder] excludes.txt の読み込みに失敗しました:', e);
-    }
-    return users;
+    return loadUserList('excludes.txt', 'excludes.txt');
+  }
+
+  async function loadAllowPaidUsers() {
+    return loadUserList('allow_paid_users.txt', 'allow_paid_users.txt');
   }
 
   async function loadAllowUrls() {
@@ -83,8 +106,71 @@
     return urls;
   }
 
+  async function loadUserList(fileName, label) {
+    const url = chrome.runtime.getURL(fileName);
+    const users = new Set();
+    try {
+      const res = await fetch(url, { cache: 'no-store' });
+      if (!res.ok) throw new Error(`status ${res.status}`);
+      const text = await res.text();
+      text.split(/\r?\n/).forEach(line => {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#')) return;
+        const normalized = normalizeUsername(trimmed);
+        if (normalized) users.add(normalized);
+      });
+    } catch (e) {
+      console.warn(`[NoteExcluder] ${label} の読み込みに失敗しました:`, e);
+    }
+    return users;
+  }
+
+  async function loadStoredExcludeUsers() {
+    try {
+      const stored = await getLocalStorageValue(STORAGE_EXCLUDE_KEY);
+      return normalizeStoredUserList(stored);
+    } catch (e) {
+      console.warn('[NoteExcluder] 保存済み除外ユーザーの読み込みに失敗しました:', e);
+      return new Set();
+    }
+  }
+
+  function getLocalStorageValue(key) {
+    return new Promise(resolve => {
+      chrome.storage.local.get([key], result => {
+        resolve(result?.[key]);
+      });
+    });
+  }
+
+  function normalizeStoredUserList(value) {
+    if (!Array.isArray(value)) return new Set();
+    const users = new Set();
+    value.forEach(entry => {
+      const normalized = normalizeUsername(entry);
+      if (normalized) users.add(normalized);
+    });
+    return users;
+  }
+
+  function mergeSets(...sets) {
+    const merged = new Set();
+    sets.forEach(set => {
+      set?.forEach(value => {
+        merged.add(value);
+      });
+    });
+    return merged;
+  }
+
   function scanCards() {
     document.querySelectorAll(CARD_SELECTOR).forEach(processCard);
+  }
+
+  function rescanAllCards() {
+    seenAuthors.clear();
+    document.querySelectorAll(CARD_SELECTOR).forEach(resetCardState);
+    scanCards();
   }
 
   function observeMutations() {
@@ -118,17 +204,19 @@
       return;
     }
 
-    if (isPaidCard(card)) {
-      hideCard(card, 'paid');
-      return;
-    }
-
     if (author) {
       if (excludeUsers.has(author)) {
         hideCard(card, 'user');
         return;
       }
+    }
 
+    if (isPaidCard(card) && !isPaidUser(author)) {
+      hideCard(card, 'paid');
+      return;
+    }
+
+    if (author) {
       // プロフィールページの場合は、そのユーザーに対する「重複表示」の非表示化をスキップする
       const profileUser = getProfilePageUser();
       if (profileUser && author === profileUser) {
@@ -152,10 +240,8 @@
     // pathnameが /username もしくは /username/rss 等かを判定
     const segments = location.pathname.split('/').filter(Boolean);
     if (segments.length === 1) {
-      const first = segments[0];
-      // note.comのトップレベル予約語でなければユーザーIDとみなす
-      const reserved = ['recommendations', 'timeline', 'interests', 'search', 'settings', 'notifications', 'messages', 'magazines', 'n'];
-      if (!reserved.includes(first)) {
+      const first = normalizePathSegment(segments[0]);
+      if (isUserPathSegment(first)) {
         return first;
       }
     }
@@ -195,19 +281,18 @@
   }
 
   function extractAuthorUsername(card) {
+    let bestCandidate = '';
+    let bestScore = -1;
     const links = card.querySelectorAll('a[href]');
     for (const link of links) {
-      const url = parseNoteUrl(link.getAttribute('href'));
-      if (!url) continue;
-      const segments = url.pathname.split('/').filter(Boolean);
-      if (segments.length === 0) continue;
-      const first = segments[0];
-      if (first === 'n') continue;
-      if (/^[A-Za-z0-9_\-]+$/.test(first)) {
-        return first;
+      const candidate = extractUsernameCandidate(link.getAttribute('href'));
+      if (!candidate) continue;
+      if (candidate.score > bestScore) {
+        bestCandidate = candidate.username;
+        bestScore = candidate.score;
       }
     }
-    return '';
+    return bestCandidate;
   }
 
   function hasAllowedUrl(card) {
@@ -226,16 +311,27 @@
     card.dataset.noteexcluderHidden = reason;
   }
 
+  function resetCardState(card) {
+    if (!(card instanceof HTMLElement)) return;
+    if (card.dataset.noteexcluderHidden) {
+      card.style.removeProperty('display');
+      delete card.dataset.noteexcluderHidden;
+    }
+    delete card.dataset.noteexcluderProcessed;
+  }
+
+  function isPaidUser(username) {
+    return Boolean(username) && allowPaidUsers.has(username);
+  }
+
   function normalizeUsername(input) {
     const s = String(input).trim();
     if (!s) return '';
-    if (s.startsWith('@')) return s.slice(1);
+    if (s.startsWith('@')) return normalizePathSegment(s.slice(1));
 
-    const url = parseNoteUrl(s);
-    if (!url) return s;
-
-    const segments = url.pathname.split('/').filter(Boolean);
-    return segments[0] || '';
+    const fromUrl = extractUsernameFromNoteUrl(s);
+    if (fromUrl) return fromUrl;
+    return normalizePathSegment(s);
   }
 
   function normalizeNoteUrl(input) {
@@ -261,6 +357,42 @@
       // ignore
     }
     return null;
+  }
+
+  function extractUsernameCandidate(input) {
+    const url = parseNoteUrl(input);
+    if (!url) return null;
+
+    const username = extractUsernameFromNoteUrl(url);
+    if (!username) return null;
+
+    const segments = url.pathname.split('/').filter(Boolean).map(normalizePathSegment);
+    if (segments.length >= 2 && segments[1] === 'n') {
+      return { username, score: 3 };
+    }
+    if (segments.length === 1) {
+      return { username, score: 2 };
+    }
+    return { username, score: 1 };
+  }
+
+  function extractUsernameFromNoteUrl(input) {
+    const url = input instanceof URL ? input : parseNoteUrl(input);
+    if (!url) return '';
+
+    const segments = url.pathname.split('/').filter(Boolean).map(normalizePathSegment);
+    if (segments.length === 0) return '';
+
+    const first = segments[0];
+    return isUserPathSegment(first) ? first : '';
+  }
+
+  function isUserPathSegment(segment) {
+    return /^[a-z0-9_-]+$/.test(segment) && !RESERVED_TOP_LEVEL_PATHS.has(segment);
+  }
+
+  function normalizePathSegment(input) {
+    return String(input || '').trim().replace(/^@/, '').toLowerCase();
   }
 
   function compactText(text) {

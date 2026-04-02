@@ -1,0 +1,8 @@
+# 有料記事の表示を許可したい note ユーザー名を1行1件で記載
+# 例:
+# foobar
+# @baz_user
+# https://note.com/qux
+
+kumate2
+anexkanikitai
