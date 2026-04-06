@@ -1,7 +1,14 @@
 (function () {
   'use strict';
 
-  const CARD_SELECTOR = '[class*="m-largeNoteWrapper__card"], div.flex.w-full.rounded-lg.bg-surface-normal';
+  const DESKTOP_CARD_SELECTOR = [
+    '[class*="m-largeNoteWrapper__card"]',
+    'div.flex.w-full.rounded-lg.bg-surface-normal'
+  ].join(', ');
+  const MOBILE_CARD_SELECTOR = [
+    'figure[class*="o-horizontalTimeLineNote"]'
+  ].join(', ');
+  const ARTICLE_LINK_SELECTOR = 'a[href*="/n/"]';
   const STORAGE_EXCLUDE_KEY = 'extraExcludedUsers';
   const RESERVED_TOP_LEVEL_PATHS = new Set([
     'about',
@@ -19,12 +26,18 @@
     'settings',
     'timeline'
   ]);
+  const AUTHOR_RETRY_DELAYS_MS = [150, 500, 1500];
+  const INITIAL_RESCAN_DELAYS_MS = [300, 1000, 2500, 5000];
+  const CARD_RETRY_ATTR = 'noteexcluderRetryCount';
+  const DEBUG =
+    location.search.includes('noteexcluder_debug=1') ||
+    window.localStorage?.getItem('noteexcluder_debug') === '1';
 
   let fileExcludeUsers = new Set();
   let excludeUsers = new Set();
   let allowPaidUsers = new Set();
   let allowUrls = new Set();
-  let seenAuthors = new Set();
+  let visibleAuthorCounts = new Map();
   let lastUrl = location.href;
 
   async function init() {
@@ -33,6 +46,11 @@
       excludeUsers = mergeSets(fileExcludeUsers, await loadStoredExcludeUsers());
       allowPaidUsers = await loadAllowPaidUsers();
       allowUrls = await loadAllowUrls();
+      debugLog('init', {
+        excludeUsers: Array.from(excludeUsers),
+        allowPaidUsers: Array.from(allowPaidUsers),
+        allowUrls: Array.from(allowUrls)
+      });
     } catch (e) {
       console.warn('[NoteExcluder] 除外設定ファイルの読み込みに失敗:', e);
       fileExcludeUsers = new Set();
@@ -44,6 +62,7 @@
     resetOnUrlChange();
     observeStorageChanges();
     scanCards();
+    scheduleInitialRescans();
     observeMutations();
   }
 
@@ -94,12 +113,14 @@
       const res = await fetch(url, { cache: 'no-store' });
       if (!res.ok) throw new Error(`status ${res.status}`);
       const text = await res.text();
+      debugLog('loadAllowUrls:raw', { url, text });
       text.split(/\r?\n/).forEach(line => {
         const trimmed = line.trim();
         if (!trimmed || trimmed.startsWith('#')) return;
         const normalized = normalizeNoteUrl(trimmed);
         if (normalized) urls.add(normalized);
       });
+      debugLog('loadAllowUrls:parsed', { urls: Array.from(urls) });
     } catch (e) {
       console.warn('[NoteExcluder] allow_urls.txt の読み込みに失敗しました:', e);
     }
@@ -113,12 +134,14 @@
       const res = await fetch(url, { cache: 'no-store' });
       if (!res.ok) throw new Error(`status ${res.status}`);
       const text = await res.text();
+      debugLog('loadUserList:raw', { label, url, text });
       text.split(/\r?\n/).forEach(line => {
         const trimmed = line.trim();
         if (!trimmed || trimmed.startsWith('#')) return;
         const normalized = normalizeUsername(trimmed);
         if (normalized) users.add(normalized);
       });
+      debugLog('loadUserList:parsed', { label, users: Array.from(users) });
     } catch (e) {
       console.warn(`[NoteExcluder] ${label} の読み込みに失敗しました:`, e);
     }
@@ -164,74 +187,112 @@
   }
 
   function scanCards() {
-    document.querySelectorAll(CARD_SELECTOR).forEach(processCard);
+    const cards = collectCards(document);
+    debugLog('scanCards', { count: cards.length, mode: getLayoutMode() });
+    cards.forEach(processCard);
+  }
+
+  function scheduleInitialRescans() {
+    INITIAL_RESCAN_DELAYS_MS.forEach(delay => {
+      window.setTimeout(() => {
+        debugLog('scheduledRescan', { delay });
+        scanCards();
+      }, delay);
+    });
   }
 
   function rescanAllCards() {
-    seenAuthors.clear();
-    document.querySelectorAll(CARD_SELECTOR).forEach(resetCardState);
+    visibleAuthorCounts.clear();
+    collectCards(document).forEach(resetCardState);
     scanCards();
   }
 
   function observeMutations() {
     const observer = new MutationObserver(mutations => {
+      const cardsToProcess = new Set();
+      const selector = getActiveCardSelector();
+
       for (const mutation of mutations) {
         if (mutation.type !== 'childList') continue;
         mutation.addedNodes.forEach(node => {
           if (!(node instanceof HTMLElement)) return;
-          if (node.matches(CARD_SELECTOR)) {
-            processCard(node);
+          if (node.matches?.(selector)) {
+            cardsToProcess.add(node);
           }
-          node.querySelectorAll?.(CARD_SELECTOR).forEach(processCard);
+          node.querySelectorAll?.(selector).forEach(card => {
+            cardsToProcess.add(card);
+          });
         });
       }
+
+      if (cardsToProcess.size > 0) {
+        debugLog('mutation', { count: cardsToProcess.size });
+      }
+      cardsToProcess.forEach(processCard);
     });
-    observer.observe(document.body, { childList: true, subtree: true });
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true
+    });
   }
 
   function processCard(card) {
     if (!(card instanceof HTMLElement)) return;
-    if (typeof card.matches === 'function' && !card.matches(CARD_SELECTOR)) return;
     if (card.dataset.noteexcluderProcessed === '1') return;
     card.dataset.noteexcluderProcessed = '1';
 
     const author = extractAuthorUsername(card);
+    debugLog('processCard', {
+      author,
+      links: Array.from(card.querySelectorAll('a[href]')).map(link => link.href)
+    });
 
     if (hasAllowedUrl(card)) {
       if (author) {
-        seenAuthors.add(author);
+        markAuthorVisible(card, author);
       }
+      debugLog('allowedUrl', { author });
       return;
     }
 
-    if (author) {
-      if (excludeUsers.has(author)) {
-        hideCard(card, 'user');
+    if (!author) {
+      if (isPaidCard(card)) {
+        hideCard(card, 'paid');
         return;
       }
+
+      scheduleCardRetry(card);
+      return;
+    }
+
+    if (excludeUsers.has(author)) {
+      debugLog('hide:user', { author });
+      hideCard(card, 'user');
+      return;
     }
 
     if (isPaidCard(card) && !isPaidUser(author)) {
+      debugLog('hide:paid', { author });
       hideCard(card, 'paid');
       return;
     }
 
-    if (author) {
-      // プロフィールページの場合は、そのユーザーに対する「重複表示」の非表示化をスキップする
-      const profileUser = getProfilePageUser();
-      if (profileUser && author === profileUser) {
-        return;
-      }
-
-      // 同一作者の2記事目以降を非表示にする
-      if (seenAuthors.has(author)) {
-        hideCard(card, 'duplicate');
-        return;
-      }
-
-      // 初回表示の作者を記録
-      seenAuthors.add(author);
+    // プロフィールページの場合は、そのユーザーに対する「重複表示」の非表示化をスキップする
+    const profileUser = getProfilePageUser();
+    if (profileUser && author === profileUser) {
+      markAuthorVisible(card, author);
+      return;
     }
+
+    // 同一作者の2記事目以降を非表示にする
+    if (getVisibleAuthorCount(author) > 0) {
+      debugLog('hide:duplicate', { author });
+      hideCard(card, 'duplicate');
+      return;
+    }
+
+    // 初回表示の作者を記録
+    markAuthorVisible(card, author);
   }
 
   function getProfilePageUser() {
@@ -295,6 +356,68 @@
     return bestCandidate;
   }
 
+  function collectCards(root) {
+    const cards = new Set();
+    if (!(root instanceof Element || root instanceof Document)) {
+      return cards;
+    }
+
+    const selector = getActiveCardSelector();
+
+    if (root instanceof Element) {
+      if (root.matches?.(selector)) {
+        cards.add(root);
+      }
+      const ownCard = findCardContainer(root);
+      if (ownCard) {
+        cards.add(ownCard);
+      }
+    }
+
+    root.querySelectorAll?.(selector).forEach(card => {
+      cards.add(card);
+    });
+
+    if (getLayoutMode() === 'mobile') {
+      root.querySelectorAll?.(ARTICLE_LINK_SELECTOR).forEach(link => {
+        const card = findCardContainer(link);
+        if (card) {
+          cards.add(card);
+        }
+      });
+    }
+
+    return cards;
+  }
+
+  function findCardContainer(start) {
+    if (!(start instanceof Element)) return null;
+
+    const selector = getActiveCardSelector();
+    const direct = start.closest(selector);
+    if (direct) return direct;
+
+    if (getLayoutMode() === 'mobile') {
+      const anchor = start.matches?.(ARTICLE_LINK_SELECTOR)
+        ? start
+        : start.closest(ARTICLE_LINK_SELECTOR);
+      const mobileCard = anchor?.closest?.(MOBILE_CARD_SELECTOR);
+      if (mobileCard instanceof HTMLElement) {
+        return mobileCard;
+      }
+    }
+
+    return null;
+  }
+
+  function getActiveCardSelector() {
+    return getLayoutMode() === 'mobile' ? MOBILE_CARD_SELECTOR : DESKTOP_CARD_SELECTOR;
+  }
+
+  function getLayoutMode() {
+    return window.matchMedia('(max-width: 768px)').matches ? 'mobile' : 'desktop';
+  }
+
   function hasAllowedUrl(card) {
     const links = card.querySelectorAll('a[href]');
     for (const link of links) {
@@ -313,15 +436,70 @@
 
   function resetCardState(card) {
     if (!(card instanceof HTMLElement)) return;
+    unmarkAuthorVisible(card);
     if (card.dataset.noteexcluderHidden) {
       card.style.removeProperty('display');
       delete card.dataset.noteexcluderHidden;
     }
     delete card.dataset.noteexcluderProcessed;
+    delete card.dataset[CARD_RETRY_ATTR];
+    delete card.dataset.noteexcluderAuthor;
+    delete card.dataset.noteexcluderAuthorCounted;
+  }
+
+  function scheduleCardRetry(card) {
+    if (!(card instanceof HTMLElement)) return;
+
+    const retryCount = Number(card.dataset[CARD_RETRY_ATTR] || '0');
+    if (retryCount >= AUTHOR_RETRY_DELAYS_MS.length) {
+      console.debug('[NoteExcluder] 著者名を特定できないカードをスキップしました', card);
+      return;
+    }
+
+    card.dataset[CARD_RETRY_ATTR] = String(retryCount + 1);
+    delete card.dataset.noteexcluderProcessed;
+
+    window.setTimeout(() => {
+      if (!document.contains(card)) return;
+      processCard(card);
+    }, AUTHOR_RETRY_DELAYS_MS[retryCount]);
   }
 
   function isPaidUser(username) {
     return Boolean(username) && allowPaidUsers.has(username);
+  }
+
+  function getVisibleAuthorCount(author) {
+    return visibleAuthorCounts.get(author) || 0;
+  }
+
+  function markAuthorVisible(card, author) {
+    if (!(card instanceof HTMLElement) || !author) return;
+    if (card.dataset.noteexcluderAuthorCounted === '1' && card.dataset.noteexcluderAuthor === author) {
+      return;
+    }
+
+    unmarkAuthorVisible(card);
+    card.dataset.noteexcluderAuthor = author;
+    card.dataset.noteexcluderAuthorCounted = '1';
+    visibleAuthorCounts.set(author, getVisibleAuthorCount(author) + 1);
+  }
+
+  function unmarkAuthorVisible(card) {
+    if (!(card instanceof HTMLElement)) return;
+    if (card.dataset.noteexcluderAuthorCounted !== '1') return;
+
+    const author = card.dataset.noteexcluderAuthor;
+    if (author) {
+      const next = getVisibleAuthorCount(author) - 1;
+      if (next > 0) {
+        visibleAuthorCounts.set(author, next);
+      } else {
+        visibleAuthorCounts.delete(author);
+      }
+    }
+    delete card.dataset.noteexcluderAuthor;
+    delete card.dataset.noteexcluderAuthorCounted;
   }
 
   function normalizeUsername(input) {
@@ -329,8 +507,10 @@
     if (!s) return '';
     if (s.startsWith('@')) return normalizePathSegment(s.slice(1));
 
-    const fromUrl = extractUsernameFromNoteUrl(s);
-    if (fromUrl) return fromUrl;
+    if (looksLikeUrlOrPath(s)) {
+      const fromUrl = extractUsernameFromNoteUrl(s);
+      if (fromUrl) return fromUrl;
+    }
     return normalizePathSegment(s);
   }
 
@@ -395,8 +575,18 @@
     return String(input || '').trim().replace(/^@/, '').toLowerCase();
   }
 
+  function looksLikeUrlOrPath(input) {
+    const s = String(input || '').trim();
+    return /^(https?:)?\/\//i.test(s) || s.startsWith('/') || s.includes('/');
+  }
+
   function compactText(text) {
     return (text || '').replace(/\s+/g, '');
+  }
+
+  function debugLog(label, payload) {
+    if (!DEBUG) return;
+    console.log(`[NoteExcluder] ${label}`, payload);
   }
 
   if (document.readyState === 'loading') {
