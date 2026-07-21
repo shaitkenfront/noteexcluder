@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Note Excluder",
-  "version": "0.4.0",
-  "description": "note.com 上で指定したカードから有料記事と除外ユーザーの記事を非表示にします",
+  "version": "0.5.0",
+  "description": "note.com 上で有料記事、除外ユーザー、NGワードを含む記事を非表示にします",
   "permissions": ["contextMenus", "storage"],
   "background": {
     "service_worker": "background.js"
@@ -18,7 +18,7 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["excludes.txt", "allow_paid_users.txt", "allow_urls.txt"],
+      "resources": ["excludes.txt", "allow_paid_users.txt", "allow_urls.txt", "ng_words.txt"],
       "matches": ["https://note.com/*"]
     }
   ]

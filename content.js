@@ -37,6 +37,7 @@
   let excludeUsers = new Set();
   let allowPaidUsers = new Set();
   let allowUrls = new Set();
+  let ngWords = new Set();
   let visibleAuthorCounts = new Map();
   let lastUrl = location.href;
 
@@ -46,10 +47,12 @@
       excludeUsers = mergeSets(fileExcludeUsers, await loadStoredExcludeUsers());
       allowPaidUsers = await loadAllowPaidUsers();
       allowUrls = await loadAllowUrls();
+      ngWords = await loadNgWords();
       debugLog('init', {
         excludeUsers: Array.from(excludeUsers),
         allowPaidUsers: Array.from(allowPaidUsers),
-        allowUrls: Array.from(allowUrls)
+        allowUrls: Array.from(allowUrls),
+        ngWords: Array.from(ngWords)
       });
     } catch (e) {
       console.warn('[NoteExcluder] 除外設定ファイルの読み込みに失敗:', e);
@@ -57,6 +60,7 @@
       excludeUsers = new Set();
       allowPaidUsers = new Set();
       allowUrls = new Set();
+      ngWords = new Set();
     }
 
     resetOnUrlChange();
@@ -125,6 +129,26 @@
       console.warn('[NoteExcluder] allow_urls.txt の読み込みに失敗しました:', e);
     }
     return urls;
+  }
+
+  async function loadNgWords() {
+    const url = chrome.runtime.getURL('ng_words.txt');
+    const words = new Set();
+    try {
+      const res = await fetch(url, { cache: 'no-store' });
+      if (!res.ok) throw new Error(`status ${res.status}`);
+      const text = await res.text();
+      text.split(/\r?\n/).forEach(line => {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#')) return;
+        const word = normalizeText(trimmed);
+        if (word) words.add(word);
+      });
+      debugLog('loadNgWords:parsed', { words: Array.from(words) });
+    } catch (e) {
+      console.warn('[NoteExcluder] ng_words.txt の読み込みに失敗しました:', e);
+    }
+    return words;
   }
 
   async function loadUserList(fileName, label) {
@@ -252,6 +276,13 @@
         markAuthorVisible(card, author);
       }
       debugLog('allowedUrl', { author });
+      return;
+    }
+
+    const matchedNgWord = findMatchedNgWord(card);
+    if (matchedNgWord) {
+      debugLog('hide:ngWord', { matchedNgWord });
+      hideCard(card, 'ng-word');
       return;
     }
 
@@ -429,6 +460,17 @@
     return false;
   }
 
+  function findMatchedNgWord(card) {
+    if (!ngWords.size) return '';
+
+    const cardText = normalizeText(card.textContent);
+    if (!cardText) return '';
+    for (const word of ngWords) {
+      if (cardText.includes(word)) return word;
+    }
+    return '';
+  }
+
   function hideCard(card, reason) {
     card.style.setProperty('display', 'none', 'important');
     card.dataset.noteexcluderHidden = reason;
@@ -582,6 +624,10 @@
 
   function compactText(text) {
     return (text || '').replace(/\s+/g, '');
+  }
+
+  function normalizeText(text) {
+    return String(text || '').normalize('NFKC').toLocaleLowerCase('ja-JP').replace(/\s+/g, ' ').trim();
   }
 
   function debugLog(label, payload) {
