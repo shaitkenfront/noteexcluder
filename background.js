@@ -25,13 +25,19 @@ chrome.runtime.onStartup.addListener(() => {
   createContextMenu();
 });
 
-chrome.contextMenus.onShown.addListener(info => {
-  chrome.contextMenus.update(
-    MENU_ID,
-    { visible: Boolean(extractProfileUsernameFromNoteUrl(info.linkUrl)) },
-    () => chrome.contextMenus.refresh()
-  );
-});
+const supportsDynamicContextMenuVisibility =
+  Boolean(chrome.contextMenus.onShown?.addListener) &&
+  typeof chrome.contextMenus.refresh === 'function';
+
+if (supportsDynamicContextMenuVisibility) {
+  chrome.contextMenus.onShown.addListener(info => {
+    chrome.contextMenus.update(
+      MENU_ID,
+      { visible: Boolean(extractProfileUsernameFromNoteUrl(info.linkUrl)) },
+      () => chrome.contextMenus.refresh()
+    );
+  });
+}
 
 chrome.contextMenus.onClicked.addListener(info => {
   if (info.menuItemId !== MENU_ID) return;
@@ -62,7 +68,9 @@ function createContextMenu() {
       contexts: ['link'],
       documentUrlPatterns: ['https://note.com/*'],
       targetUrlPatterns: ['https://note.com/*'],
-      visible: false
+      // onShown/refresh 非対応のブラウザでは常に表示し、
+      // クリック時にリンクがプロフィール URL かどうかを判定する。
+      visible: !supportsDynamicContextMenuVisibility
     });
   });
 }

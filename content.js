@@ -3,10 +3,12 @@
 
   const DESKTOP_CARD_SELECTOR = [
     '[class*="m-largeNoteWrapper__card"]',
-    'div.flex.w-full.rounded-lg.bg-surface-normal'
+    'div.flex.w-full.rounded-lg.bg-surface-normal',
+    'div.flex.w-full.rounded.bg-surface-normal'
   ].join(', ');
   const MOBILE_CARD_SELECTOR = [
-    'figure[class*="o-horizontalTimeLineNote"]'
+    'figure[class*="o-horizontalTimeLineNote"]',
+    'div.flex.w-full.rounded.bg-surface-normal'
   ].join(', ');
   const ARTICLE_LINK_SELECTOR = 'a[href*="/n/"]';
   const STORAGE_EXCLUDE_KEY = 'extraExcludedUsers';
