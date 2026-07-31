@@ -12,6 +12,8 @@
   ].join(', ');
   const ARTICLE_LINK_SELECTOR = 'a[href*="/n/"]';
   const STORAGE_EXCLUDE_KEY = 'extraExcludedUsers';
+  const EXCLUDED_TITLE_ICON_PATH =
+    'M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2Zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2Zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2Z';
   const RESERVED_TOP_LEVEL_PATHS = new Set([
     'about',
     'account',
@@ -281,6 +283,12 @@
       return;
     }
 
+    if (hasExcludedTitleIcon(card)) {
+      debugLog('hide:titleIcon');
+      hideCard(card, 'title-icon');
+      return;
+    }
+
     const matchedNgWord = findMatchedNgWord(card);
     if (matchedNgWord) {
       debugLog('hide:ngWord', { matchedNgWord });
@@ -363,6 +371,35 @@
     if (hasPaidKeyword(cardText)) return true;
     if (cardText.includes('月額') && hasPrice(cardText)) return true;
     return false;
+  }
+
+  function hasExcludedTitleIcon(card) {
+    const headings = card.querySelectorAll('h1, h2, h3, h4, h5, h6');
+    for (const heading of headings) {
+      const firstContentNode = Array.from(heading.childNodes).find(node => {
+        return node.nodeType === Node.ELEMENT_NODE ||
+          (node.nodeType === Node.TEXT_NODE && node.textContent.trim());
+      });
+
+      if (
+        firstContentNode?.nodeType !== Node.ELEMENT_NODE ||
+        firstContentNode.localName?.toLowerCase() !== 'svg'
+      ) {
+        continue;
+      }
+
+      const paths = firstContentNode.querySelectorAll('path[d]');
+      for (const path of paths) {
+        if (normalizeSvgPath(path.getAttribute('d')) === EXCLUDED_TITLE_ICON_PATH) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  function normalizeSvgPath(pathData) {
+    return String(pathData || '').trim().replace(/\s+/g, ' ');
   }
 
   function hasPaidKeyword(text) {

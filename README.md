@@ -3,6 +3,7 @@ noteexcluder
 概要
 - note.com 上でクラス名に `m-largeNoteWrapper__card` を含むカードを対象とし、以下を非表示にする Chrome 拡張です。
   - 有料設定のある記事
+  - タイトル先頭に指定の鍵SVGアイコンがある記事
   - 除外設定ファイルに含まれるユーザーの記事
   - NGワードを含む記事
   - ただし有料表示許可ファイルに含まれるユーザーの有料記事は表示する
@@ -25,8 +26,9 @@ noteexcluder
 仕様補足
 - 対象カードは `m-largeNoteWrapper__card` を含む要素に限定しています
 - 有料記事の判定は「有料/会員限定/販売中/月額」などの文言や価格表記をヒューリスティックに検出します
+- 指定の鍵SVGアイコンは、見出しの先頭にあり、かつ `path` の `d` 属性が一致する場合に検出します
 - 一覧カード内のリンク順が変わっても、記事URLやプロフィールURLから著者名を優先的に判定します
-- 優先順位は `allow_urls.txt` > `ng_words.txt` > `excludes.txt` > `allow_paid_users.txt` です
+- 優先順位は `allow_urls.txt` > 鍵SVGアイコン > `ng_words.txt` > `excludes.txt` > `allow_paid_users.txt` です
 - NGワードはすべての記事カードに部分一致で適用されます
 - NGワードの判定では、英字の大文字・小文字および全角・半角を区別しません
 - 右クリックで追加した除外ユーザーは `chrome.storage.local` に保存され、`excludes.txt` とマージして判定します
