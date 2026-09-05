@@ -92,13 +92,18 @@ function parseNoteUrl(input) {
 
   try {
     const url = new URL(s);
-    if (url.hostname.endsWith('note.com')) {
+    if (isNoteDomain(url.hostname)) {
       return url;
     }
   } catch (_) {
     // ignore
   }
   return null;
+}
+
+function isNoteDomain(hostname) {
+  const normalized = String(hostname || '').toLowerCase();
+  return normalized === 'note.com' || normalized.endsWith('.note.com');
 }
 
 function isUserPathSegment(segment) {

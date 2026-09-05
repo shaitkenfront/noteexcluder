@@ -283,6 +283,12 @@
       return;
     }
 
+    if (hasExternalLink(card)) {
+      debugLog('hide:externalLink');
+      hideCard(card, 'external-link');
+      return;
+    }
+
     if (hasExcludedTitleIcon(card)) {
       debugLog('hide:titleIcon');
       hideCard(card, 'title-icon');
@@ -499,6 +505,16 @@
     return false;
   }
 
+  function hasExternalLink(card) {
+    const links = card.querySelectorAll('a[href]');
+    for (const link of links) {
+      if (!isNoteLink(link.href)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   function findMatchedNgWord(card) {
     if (!ngWords.size) return '';
 
@@ -607,17 +623,36 @@
   }
 
   function parseNoteUrl(input) {
+    const url = parseUrl(input);
+    if (url && isNoteDomain(url.hostname)) {
+      return url;
+    }
+    return null;
+  }
+
+  function isNoteLink(input) {
+    const url = parseUrl(input);
+    return Boolean(
+      url &&
+      (url.protocol === 'http:' || url.protocol === 'https:') &&
+      isNoteDomain(url.hostname)
+    );
+  }
+
+  function parseUrl(input) {
     const s = String(input || '').trim();
     if (!s) return null;
     try {
-      const url = new URL(s, location.href);
-      if (url.hostname.endsWith('note.com')) {
-        return url;
-      }
+      return new URL(s, location.href);
     } catch (_) {
       // ignore
     }
     return null;
+  }
+
+  function isNoteDomain(hostname) {
+    const normalized = String(hostname || '').toLowerCase();
+    return normalized === 'note.com' || normalized.endsWith('.note.com');
   }
 
   function extractUsernameCandidate(input) {
