@@ -1,3 +1,4 @@
 excludes.txt
 allow_urls.txt
 ng_words.txt
+node_modules/

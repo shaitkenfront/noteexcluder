@@ -30,9 +30,8 @@
     'settings',
     'timeline'
   ]);
-  const AUTHOR_RETRY_DELAYS_MS = [150, 500, 1500];
   const INITIAL_RESCAN_DELAYS_MS = [300, 1000, 2500, 5000];
-  const CARD_RETRY_ATTR = 'noteexcluderRetryCount';
+  const MUTATION_RESCAN_DELAY_MS = 50;
   const DEBUG =
     location.search.includes('noteexcluder_debug=1') ||
     window.localStorage?.getItem('noteexcluder_debug') === '1';
@@ -44,6 +43,7 @@
   let ngWords = new Set();
   let visibleAuthorCounts = new Map();
   let lastUrl = location.href;
+  let mutationRescanTimer = null;
 
   async function init() {
     try {
@@ -69,9 +69,9 @@
 
     resetOnUrlChange();
     observeStorageChanges();
+    observeMutations();
     scanCards();
     scheduleInitialRescans();
-    observeMutations();
   }
 
   function resetOnUrlChange() {
@@ -83,7 +83,10 @@
         rescanAllCards();
       }
     });
-    observer.observe(document.querySelector('head > title'), { subtree: true, characterData: true, childList: true });
+    const title = document.querySelector('head > title');
+    if (title) {
+      observer.observe(title, { subtree: true, characterData: true, childList: true });
+    }
 
     // popstateイベントも一応ハンドル
     window.addEventListener('popstate', () => {
@@ -216,7 +219,7 @@
 
   function scanCards() {
     const cards = collectCards(document);
-    debugLog('scanCards', { count: cards.length, mode: getLayoutMode() });
+    debugLog('scanCards', { count: cards.size, mode: getLayoutMode() });
     cards.forEach(processCard);
   }
 
@@ -224,12 +227,16 @@
     INITIAL_RESCAN_DELAYS_MS.forEach(delay => {
       window.setTimeout(() => {
         debugLog('scheduledRescan', { delay });
-        scanCards();
+        rescanAllCards();
       }, delay);
     });
   }
 
   function rescanAllCards() {
+    if (mutationRescanTimer !== null) {
+      window.clearTimeout(mutationRescanTimer);
+      mutationRescanTimer = null;
+    }
     visibleAuthorCounts.clear();
     collectCards(document).forEach(resetCardState);
     scanCards();
@@ -237,30 +244,38 @@
 
   function observeMutations() {
     const observer = new MutationObserver(mutations => {
-      const cardsToProcess = new Set();
-      const selector = getActiveCardSelector();
+      if (location.href !== lastUrl) {
+        lastUrl = location.href;
+        rescanAllCards();
+        return;
+      }
 
-      for (const mutation of mutations) {
-        if (mutation.type !== 'childList') continue;
-        mutation.addedNodes.forEach(node => {
-          if (!(node instanceof HTMLElement)) return;
-          if (node.matches?.(selector)) {
-            cardsToProcess.add(node);
-          }
-          node.querySelectorAll?.(selector).forEach(card => {
-            cardsToProcess.add(card);
-          });
+      const affectsCards = mutations.some(mutation => {
+        const target = mutation.target instanceof Element
+          ? mutation.target
+          : mutation.target.parentElement;
+        // カード追加後の著者リンク・本文・属性の更新も再判定する。
+        if (findCardContainer(target)) return true;
+        if (mutation.type !== 'childList') return false;
+        return [...mutation.addedNodes, ...mutation.removedNodes].some(node => {
+          return collectCards(node).size > 0;
         });
-      }
+      });
+      if (!affectsCards || mutationRescanTimer !== null) return;
 
-      if (cardsToProcess.size > 0) {
-        debugLog('mutation', { count: cardsToProcess.size });
-      }
-      cardsToProcess.forEach(processCard);
+      // 一括追加をまとめ、DOMの表示順で著者数を数え直す。
+      mutationRescanTimer = window.setTimeout(() => {
+        mutationRescanTimer = null;
+        rescanAllCards();
+      }, MUTATION_RESCAN_DELAY_MS);
     });
     observer.observe(document.body, {
       childList: true,
-      subtree: true
+      subtree: true,
+      characterData: true,
+      attributes: true,
+      // この拡張自身によるstyle・data属性の更新は監視しない。
+      attributeFilter: ['href', 'class', 'd', 'aria-label', 'data-price', 'data-paid']
     });
   }
 
@@ -308,7 +323,8 @@
         return;
       }
 
-      scheduleCardRetry(card);
+      // 著者情報が後から読み込まれた時に、MutationObserverで再判定する。
+      delete card.dataset.noteexcluderProcessed;
       return;
     }
 
@@ -539,27 +555,8 @@
       delete card.dataset.noteexcluderHidden;
     }
     delete card.dataset.noteexcluderProcessed;
-    delete card.dataset[CARD_RETRY_ATTR];
     delete card.dataset.noteexcluderAuthor;
     delete card.dataset.noteexcluderAuthorCounted;
-  }
-
-  function scheduleCardRetry(card) {
-    if (!(card instanceof HTMLElement)) return;
-
-    const retryCount = Number(card.dataset[CARD_RETRY_ATTR] || '0');
-    if (retryCount >= AUTHOR_RETRY_DELAYS_MS.length) {
-      console.debug('[NoteExcluder] 著者名を特定できないカードをスキップしました', card);
-      return;
-    }
-
-    card.dataset[CARD_RETRY_ATTR] = String(retryCount + 1);
-    delete card.dataset.noteexcluderProcessed;
-
-    window.setTimeout(() => {
-      if (!document.contains(card)) return;
-      processCard(card);
-    }, AUTHOR_RETRY_DELAYS_MS[retryCount]);
   }
 
   function isPaidUser(username) {
